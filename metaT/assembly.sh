@@ -5,7 +5,6 @@
 #SBATCH --partition=hugemem-avx2  
 #SBATCH --output=salmon.%A_%a.txt
 #SBATCH --error=salmon.%A_%a.err
-#SBATCH --mail-user=marie.saitou@nmbu.no
 #SBATCH --mail-type=END
 
 eval "$(conda shell.bash hook)"
