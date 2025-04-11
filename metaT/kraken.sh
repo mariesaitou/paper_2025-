@@ -2,7 +2,6 @@
 #SBATCH --job-name=kraken_bracken
 #SBATCH --mem=50G  # Increase memory
 #SBATCH --cpus-per-task=4    
-#SBATCH --mail-user=marie.saitou@nmbu.no
 #SBATCH --output=kraken_bracken.%A_%a.txt
 #SBATCH --mail-type=END
 
