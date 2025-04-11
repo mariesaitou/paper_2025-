@@ -1,6 +1,5 @@
 #!/bin/bash
 #SBATCH --job-name=unmap
-#SBATCH --mail-user=marie.saitou@nmbu.no
 #SBATCH --output=unmap.%A_%a.txt
 #SBATCH --mail-type=END
 #SBATCH --cpus-per-task=4
