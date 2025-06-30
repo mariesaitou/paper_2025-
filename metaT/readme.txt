@@ -1,2 +1,2 @@
 Tools for Harding and Diblasi et al., 
-**Metatranscriptomic Insights into Microbial Dynamics Prior to Disease Onset in Atlantic Salmon Aquaculture**  
+**Repurposing Host-Derived RNA-seq Data for Microbial Taxonomic and Functional Profiling in Aquaculture Settings**  
