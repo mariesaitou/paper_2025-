@@ -1,0 +1,29 @@
+name: r-4.4
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - r-base=4.4
+  - r-data.table
+  - r-matrix
+  - r-matrixstats
+  - r-dplyr
+  - r-tidyr
+  - r-tibble
+  - r-glue
+  - bioconductor-delayedarray
+  - r-httr
+  - bioconductor-biocgenerics
+  - bioconductor-s4vectors
+  - bioconductor-iranges
+  - bioconductor-genomeinfodb
+  - bioconductor-genomicranges
+  - bioconductor-matrixgenerics
+  - bioconductor-summarizedexperiment
+  - bioconductor-singlecellexperiment
+  - bioconductor-edger
+  - bioconductor-zellkonverter
+  - bioconductor-rhdf5
+  - bioconductor-hdf5array
+  - bioconductor-rhdf5lib
+
