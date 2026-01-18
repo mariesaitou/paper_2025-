@@ -55,8 +55,3 @@ Input file paths are defined at the top of the script and may need to be adjuste
 - All resampling runs are controlled by explicit random seeds.
 - snapclust assigns parental clusters as A and B without biological labels; downstream accuracy evaluation accounts for possible A/B label inversion.
 
-## Citation
-
-If you use this code or results, please cite:
-
-Ellis et al. (2020), Scientific Reports 10:7781.
