@@ -1,0 +1,7 @@
+# macOS
+.DS_Store
+
+# Large SLiM outputs (regenerable)
+lob_SLiM/*.tsv
+!lob_SLiM/all.tsv
+!lob_SLiM/all.tsv.natal.tsv.gz
