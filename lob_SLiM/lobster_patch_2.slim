@@ -1,0 +1,1182 @@
+// =======================================================
+// 1 species (lobster) × 10 internal patches (pos=1..10), sexes enabled
+// nonWF, no genome; individuals only
+//
+// Patch axis: upstream (1) -> downstream (10)
+// External patches:
+//   pos=0   : upstream external (NOT recorded)
+//   pos=11  : downstream external (NOT recorded)
+// Record/output only for internal patches pos=1..10.
+//
+// IMPORTANT: egg flag stored in ind.tag LSB (NO NULL possible)
+//   tag = gInt*2 + eggFlag
+//   eggFlag: 0/1
+// size stored in ind.tagF
+//
+// Management:
+// - Internal patches labeled into 5 no-take and 5 open according to MPA layout
+// - Pre-regulation: harvest everywhere if fishOn (no size/egg rules)
+// - Post-regulation:
+//     * no-take patches closed
+//     * open patches: slot 25–32 cm; egg-bearing females protected
+// - External patches are treated as open-like for harvest rules (i.e., can be harvested),
+//   but are NOT recorded in popN/natal/sizebin (trap log can include them).
+//
+// Density dependence:
+// - Beverton–Holt factor computed per-subpop each gen:
+//     dd = 1 / (1 + dd_a * (N/K))
+//   dd_factor is STORED on subpop and applied to recruitment (nLarvae),
+//   NOT applied to survival via sp.fitnessScaling.
+//
+// Output (lightweight):
+// - popN TSV (internal only): 1-row format per pos
+//     cond mpa rep generation pos area N
+// - natal TSV (snap gens only): bornPos×currPos matrix in 1-row format
+//     cond mpa rep generation bornPos currPos n prop
+// - sizebin TSV (snap gens only): size bins by pos×area×sex
+//     cond mpa rep generation pos area sex bin_lo bin_hi n prop
+// - trap TSV (captured individuals): capture/harvest decisions for debugging slot/egg rules
+//     cond mpa rep generation pos area sex size egg captured harvested reason
+// =======================================================
+
+initialize() {
+    initializeSLiMModelType("nonWF");
+    initializeSex("A");
+
+    initializeMutationType("m1", 0.5, "f", 0.0);
+    initializeGenomicElementType("g1", m1, 1.0);
+    initializeGenomicElement(g1, 0, 0);
+    initializeMutationRate(0.0);
+    initializeRecombinationRate(0.0);
+}
+
+// ---- Gompertz per-year survival ----
+function (float) S_gompertz(integer age, float h0, float g) {
+    h = h0 * exp(g * age);
+    return exp(-h);
+}
+
+// ---- pack/unpack gInt and eggState (0/1/2) into ind.tag ----
+function (integer) packTag(integer gInt, integer eggState) {
+    return (gInt * 3) + eggState;   // eggState: 0/1/2
+}
+function (integer) unpackGInt(integer tagVal) {
+    return asInteger(floor(tagVal / 3.0));
+}
+function (integer) unpackEgg(integer tagVal) {
+    return tagVal - 3 * asInteger(floor(tagVal / 3.0));  // 0/1/2
+}
+
+
+// -------------------------------------------------------
+// Management layout: vectors of INTERNAL patch positions
+//  - ntPos: positions (1..10) that are no-take (size 5)
+//  - opPos: positions (1..10) that are open (size 5)
+// Layout types:
+//  block_up   : NT {1..5},  OPEN {6..10}
+//  block_down : OPEN {1..5}, NT {6..10}
+//  alt_A      : NT {1,3,5,7,9}, OPEN {2,4,6,8,10}
+//  alt_B      : OPEN {1,3,5,7,9}, NT {2,4,6,8,10}
+// -------------------------------------------------------
+function (void) setManagementLayout(string mpa) {
+    if (mpa == "block_up") {
+        sim.setValue("ntPos", c(1,2,3,4,5));
+        sim.setValue("opPos", c(6,7,8,9,10));
+    } else if (mpa == "block_down") {
+        sim.setValue("ntPos", c(6,7,8,9,10));
+        sim.setValue("opPos", c(1,2,3,4,5));
+    } else if (mpa == "alt_A") {
+        sim.setValue("ntPos", c(1,3,5,7,9));
+        sim.setValue("opPos", c(2,4,6,8,10));
+    } else if (mpa == "alt_B") {
+        sim.setValue("ntPos", c(2,4,6,8,10));
+        sim.setValue("opPos", c(1,3,5,7,9));
+    } else {
+        stop("Unknown MPA layout: " + mpa + " (use block_up, block_down, alt_A, alt_B)");
+    }
+}
+
+// get position (0..11) from Subpopulation.tag
+function (integer) getPos(o<Subpopulation> sp) {
+    return asInteger(sp.tag);
+}
+
+// label for internal positions (for outputs)
+function (string) areaLabel(o<Subpopulation> sp) {
+    pos = getPos(sp);
+    if (pos == 0)  return "external_up";
+    if (pos == 11) return "external_down";
+
+    ntPos = sim.getValue("ntPos");
+    opPos = sim.getValue("opPos");
+
+    for (k in 0:(size(ntPos)-1)) {
+        if (pos == ntPos[k])
+            return "no_take" + (k+1);
+    }
+    for (k in 0:(size(opPos)-1)) {
+        if (pos == opPos[k])
+            return "open" + (k+1);
+    }
+    return "unknown";
+}
+
+function (logical) isNoTakePos(integer pos) {
+    if (pos < 1 | pos > 10)
+        return F;
+    ntPos = sim.getValue("ntPos");
+    for (k in 0:(size(ntPos)-1)) {
+        if (pos == ntPos[k])
+            return T;
+    }
+    return F;
+}
+
+// -------------------------------------------------------
+// Larval target selection on an OPEN line (pos 0..11)
+// - biasDown: probability mass to downstream direction
+// - meanDist: distance scale (in "patch steps"; can be fractional)
+// -------------------------------------------------------
+function (integer) drawLarvalTargetPos(integer fromPos, float biasDown, float meanDist) {
+    if (meanDist <= 0.0)
+        return fromPos;
+
+    nTotal = sim.getValue("nTotal"); // 12
+    w = NULL;
+    sumW = 0.0;
+
+    for (j in 0:(nTotal-1)) {
+        d = j - fromPos;
+        if (d == 0) {
+            ww = biasDown * 1.0;
+        } else if (d > 0) {
+            ww = biasDown * exp(-(d) / meanDist);
+        } else {
+            ww = (1.0 - biasDown) * exp(-(-d) / meanDist);
+        }
+        w = c(w, ww);
+        sumW = sumW + ww;
+    }
+
+    if (sumW <= 0.0)
+        return fromPos;
+
+    u = runif(1) * sumW;
+    cum = 0.0;
+    for (idx in 0:(nTotal-1)) {
+        cum = cum + w[idx];
+        if (u <= cum)
+            return idx;
+    }
+    return (nTotal - 1);
+}
+
+// --- write one parameter line per replicate (appended; starts with '#') ---
+function (void) writeRunParams(void) {
+    if (sim.getValue("PARAMS_WRITTEN"))
+        return;
+
+    outPath = sim.getValue("OUTFILE_PATH");
+    repVal  = sim.getValue("REP_VAL");
+    condVal = sim.getValue("COND_VAL");
+    mpaVal  = sim.getValue("MPA_SCEN");
+
+    line =
+        "#cond=" + condVal +
+        "\tmpa=" + mpaVal +
+        "\trep=" + repVal +
+        "\tlarvaBias=" + sim.getValue("larvaBias") +
+        "\tlarvaMeanDist=" + sim.getValue("larvaMeanDist") +
+        "\tmAdult_L=" + sim.getValue("mAdult_L") +
+        "\tuseSizeMaturity=" + sim.getValue("useSizeMaturity") +
+        "\tL50=" + sim.getValue("L50") +
+        "\tmatSlope=" + sim.getValue("matSlope") +
+        "\tmeanLarvae=" + sim.getValue("meanLarvae") +
+        "\tlarvaSurv=" + sim.getValue("larvaSurv") +
+        "\tdd_a=" + sim.getValue("dd_a") +
+        "\tK_internal=" + sim.getValue("K_internal") +
+        "\tK_external=" + sim.getValue("K_external") +
+        "\tminLegalSize=" + sim.getValue("minLegalSize") +
+        "\tmaxLegalSize=" + sim.getValue("maxLegalSize") +
+        "\talphaCatch_L=" + sim.getValue("alphaCatch_L") +
+        "\tbetaCatch=" + sim.getValue("betaCatch") +
+        "\tnTrap=" + sim.getValue("nTrap") +
+        "\tcandidatesPerTrap=" + sim.getValue("candidatesPerTrap") +
+        "\tsampleEvery=" + sim.getValue("sampleEvery") +
+        "\tfishStartGen=" + sim.getValue("fishStartGen") +
+        "\tregStartGen=" + sim.getValue("regStartGen") +
+        "\tprotectEggFemales=" + sim.getValue("protectEggFemales") +
+        "\tendGen=" + sim.getValue("endGen") +
+        "\n";
+
+    writeFile(outPath, line, append=T);
+    sim.setValue("PARAMS_WRITTEN", T);
+}
+
+// =========================================================
+// Snapshot outputs
+// =========================================================
+
+// bornPos × currPos, internal currPos only (1..10), bornPos includes 0..11
+// prop denominator = all alive individuals currently in currPos
+function (void) writeNatalMatrixSnapshot(void) {
+    natalPath = sim.getValue("NATAL_PATH");
+    if (isNULL(natalPath))
+        return;
+
+    repVal  = sim.getValue("REP_VAL");
+    condVal = sim.getValue("COND_VAL");
+    mpaVal  = sim.getValue("MPA_SCEN");
+    gen     = sim.generation;
+
+    for (currPos in 1:10) {
+        sp = sim.subpopulations[currPos];
+
+        alive = sp.individuals[sp.individuals.fitnessScaling > 0.0];
+        denom = size(alive);
+
+        for (bornPos in 0:11) {
+            n = 0;
+
+            if (denom > 0) {
+                for (ind in alive) {
+                    bp = ind.getValue("bornPos");
+                    if (isNULL(bp))
+                        bp = currPos; // safety fallback
+                    if (asInteger(bp) == bornPos)
+                        n = n + 1;
+                }
+            }
+
+            prop = (denom > 0) ? (n / denom) else NAN;
+
+            line =
+                condVal + "\t" +
+                mpaVal + "\t" +
+                repVal + "\t" +
+                gen + "\t" +
+                bornPos + "\t" +
+                currPos + "\t" +
+                n + "\t" +
+                prop + "\n";
+
+            writeFile(natalPath, line, append=T);
+        }
+    }
+}
+
+// size bins (0..50 by 5) by pos×area×sex
+// prop denominator = all alive individuals in the same pos (NOT sex-specific)
+function (void) writeSizeBinSnapshot(void) {
+    sizebinPath = sim.getValue("SIZEBIN_PATH");
+    if (isNULL(sizebinPath))
+        return;
+
+    repVal  = sim.getValue("REP_VAL");
+    condVal = sim.getValue("COND_VAL");
+    mpaVal  = sim.getValue("MPA_SCEN");
+    gen     = sim.generation;
+
+    binW = 5.0;
+
+    for (pos in 1:10) {
+        sp = sim.subpopulations[pos];
+
+        area = isNoTakePos(pos) ? "no_take" else "open";
+
+        aliveAll = sp.individuals[sp.individuals.fitnessScaling > 0.0];
+        denomPos = size(aliveAll);
+
+        for (sx in c("F","M")) {
+            alive = aliveAll[aliveAll.sex == sx];
+
+            for (b in 0:10) {
+                bin_lo = b * binW;
+                bin_hi = bin_lo + binW;
+
+                n = 0;
+                if (size(alive) > 0) {
+                    for (ind in alive) {
+                        s = ind.tagF;
+
+                        if (s < 0.0) s = 0.0;
+                        if (s > 50.0) s = 50.0;
+
+                        bb = asInteger(floor(s / binW));
+                        if (bb > 10) bb = 10;  // include s==50 in last bin
+
+                        if (bb == b)
+                            n = n + 1;
+                    }
+                }
+
+                prop = (denomPos > 0) ? (n / denomPos) else NAN;
+
+                line =
+                    condVal + "\t" +
+                    mpaVal + "\t" +
+                    repVal + "\t" +
+                    gen + "\t" +
+                    pos + "\t" +
+                    area + "\t" +
+                    sx + "\t" +
+                    bin_lo + "\t" +
+                    bin_hi + "\t" +
+                    n + "\t" +
+                    prop + "\n";
+
+                writeFile(sizebinPath, line, append=T);
+            }
+        }
+    }
+}
+
+
+// age bins (0..maxAge) by pos×area×sex
+// prop denominator = all alive individuals in the same pos (NOT sex-specific)
+function (void) writeAgeBinSnapshot(void) {
+    agebinPath = sim.getValue("AGEBIN_PATH");
+    if (isNULL(agebinPath))
+        return;
+
+    repVal  = sim.getValue("REP_VAL");
+    condVal = sim.getValue("COND_VAL");
+    mpaVal  = sim.getValue("MPA_SCEN");
+    gen     = sim.generation;
+
+    maxAge = 40;  // 十分大きめ（必要なら sim.setValue で外部化）
+
+    for (pos in 1:10) {
+        sp = sim.subpopulations[pos];
+        area = isNoTakePos(pos) ? "no_take" else "open";
+
+        aliveAll = sp.individuals[sp.individuals.fitnessScaling > 0.0];
+        denomPos = size(aliveAll);
+
+        for (sx in c("F","M")) {
+            alive = aliveAll[aliveAll.sex == sx];
+
+            for (a in 0:maxAge) {
+                n = 0;
+                if (size(alive) > 0) {
+                    for (ind in alive) {
+                        if (ind.age == a)
+                            n = n + 1;
+                    }
+                }
+
+                prop = (denomPos > 0) ? (n / denomPos) else NAN;
+
+                line =
+                    condVal + "\t" +
+                    mpaVal + "\t" +
+                    repVal + "\t" +
+                    gen + "\t" +
+                    pos + "\t" +
+                    area + "\t" +
+                    sx + "\t" +
+                    a + "\t" +
+                    n + "\t" +
+                    prop + "\n";
+
+                writeFile(agebinPath, line, append=T);
+            }
+        }
+    }
+}
+
+// =======================================================
+// Trap log output (captured individuals)
+// =======================================================
+function (void) logTrapEvent(string reason, o<Subpopulation> sp, o<Individual> ind, logical harvested) {
+    trapPath = sim.getValue("TRAP_PATH");
+    if (isNULL(trapPath))
+        return;
+
+    repVal  = sim.getValue("REP_VAL");
+    condVal = sim.getValue("COND_VAL");
+    mpaVal  = sim.getValue("MPA_SCEN");
+
+    pos  = getPos(sp);
+    area = areaLabel(sp);
+
+    eggFlag = 0;
+    if (ind.sex == "F")
+        eggFlag = unpackEgg(ind.tag);
+
+    line =
+        condVal + "\t" +
+        mpaVal + "\t" +
+        repVal + "\t" +
+        sim.generation + "\t" +
+        pos + "\t" +
+        area + "\t" +
+        ind.sex + "\t" +
+        ind.tagF + "\t" +
+        eggFlag + "\t" +
+        1 + "\t" +
+        (harvested ? 1 else 0) + "\t" +
+        reason + "\n";
+
+    writeFile(trapPath, line, append=T);
+}
+
+// =========================================================
+// Main
+// =========================================================
+
+1 early() {
+// over-capacity recruitment crash strength
+sim.setValue("gammaOverCap", 5.0);   // 例: 3〜10で調整
+sim.setValue("minRecruitFrac", 0.001); // 0になり過ぎ防止（任意）
+
+    sim.setValue("nInternal", 10);
+    sim.setValue("nTotal", 12); // positions 0..11
+
+    if (exists("MPA")) sim.setValue("MPA_SCEN", MPA);
+    else sim.setValue("MPA_SCEN", "block_up");
+    setManagementLayout(sim.getValue("MPA_SCEN"));
+
+    // snapshot generations
+    sim.setValue("snapGens", c(100,120,140,160,200));
+
+    initInternal = 120;
+    initExternal = 120;
+
+    // subpop names MUST be p<number>
+    sim.addSubpop("p0", initExternal);
+    sim.subpopulations[0].tag = 0;
+
+    for (pos in 1:10) {
+        sim.addSubpop("p" + pos, initInternal);
+        sim.subpopulations[pos].tag = pos; // index==pos
+    }
+
+    sim.addSubpop("p11", initExternal);
+    sim.subpopulations[11].tag = 11;
+
+    // growth
+    sim.setValue("Linf_L", 45.0);
+    sim.setValue("k_L", 0.10);
+    sim.setValue("sdGrowth", 0.25);
+
+    // life-history
+    sim.setValue("useSizeMaturity", T);
+    sim.setValue("L50", 28.1);
+    sim.setValue("matSlope", 0.0886);
+    sim.setValue("minAge_L", 5);
+    sim.setValue("pBreed_L", 0.5);
+
+    // mortality (Gompertz)
+    // Agingの「40cm付近で急落」を緩めるため、g_Lを下げる（より緩やかな高齢化）
+    sim.setValue("h0_L", 0.007);
+    sim.setValue("g_L",  0.2);
+
+    // fecundity + early survival
+    sim.setValue("meanLarvae", 100);
+    sim.setValue("larvaSurv",  0.05);
+
+    // density dependence
+    sim.setValue("dd_a", 1.0);
+    sim.setValue("K_internal", 100);
+    sim.setValue("K_external", 100);
+
+    // traps / fishing
+    sim.setValue("nTrap", 4);
+    sim.setValue("trapEff", rnorm(sim.getValue("nTrap"), 0.0, 0.5));
+    sim.setValue("candidatesPerTrap", 4);
+    sim.setValue("minTrapSize", 10.0);   // cm
+
+    // sampling frequency for popN and parameter logging
+    sim.setValue("sampleEvery", 10);
+    sim.setValue("trapEvery", 20);   // trapログは10年に1回
+
+
+    // capture parameters (logit)
+    sim.setValue("alphaCatch_L", -8.4);
+    sim.setValue("betaCatch", 0.3);
+
+    // fishery rules
+    sim.setValue("minLegalSize", 25.0);
+    sim.setValue("maxLegalSize", 32.0);
+    sim.setValue("fishStartGen", 51);
+    sim.setValue("regStartGen", 101);
+    sim.setValue("protectEggFemales", T);
+
+    sim.setValue("endGen", 200);
+
+    sim.setValue("gScale", 10000.0);
+    sim.setValue("PARAMS_WRITTEN", F);
+
+    // overrides (command-line)
+    if (exists("useSizeMaturity")) sim.setValue("useSizeMaturity", useSizeMaturity);
+    if (exists("L50"))      sim.setValue("L50", L50);
+    if (exists("matSlope")) sim.setValue("matSlope", matSlope);
+
+    if (exists("meanLarvae")) sim.setValue("meanLarvae", meanLarvae);
+    if (exists("larvaSurv"))  sim.setValue("larvaSurv", larvaSurv);
+
+    if (exists("dd_a")) sim.setValue("dd_a", dd_a);
+    if (exists("K_internal")) sim.setValue("K_internal", K_internal);
+    if (exists("K_external")) sim.setValue("K_external", K_external);
+
+    if (exists("minLegalSize")) sim.setValue("minLegalSize", minLegalSize);
+    if (exists("maxLegalSize")) sim.setValue("maxLegalSize", maxLegalSize);
+
+    if (exists("fishStartGen")) sim.setValue("fishStartGen", fishStartGen);
+    if (exists("regStartGen"))  sim.setValue("regStartGen", regStartGen);
+    if (exists("protectEggFemales")) sim.setValue("protectEggFemales", protectEggFemales);
+    if (exists("endGen")) sim.setValue("endGen", endGen);
+
+    if (exists("sampleEvery")) sim.setValue("sampleEvery", sampleEvery);
+    if (exists("alphaCatch_L")) sim.setValue("alphaCatch_L", alphaCatch_L);
+    if (exists("betaCatch")) sim.setValue("betaCatch", betaCatch);
+
+    if (exists("nTrap")) sim.setValue("nTrap", nTrap);
+    if (exists("candidatesPerTrap")) sim.setValue("candidatesPerTrap", candidatesPerTrap);
+
+    // output base
+    if (exists("OUTFILE")) sim.setValue("OUTFILE_PATH", OUTFILE);
+    else sim.setValue("OUTFILE_PATH", "lobster_slim_test.tsv"); // used for params only
+
+    if (exists("REP")) sim.setValue("REP_VAL", REP);
+    else sim.setValue("REP_VAL", 0);
+
+    if (exists("COND")) sim.setValue("COND_VAL", COND);
+    else sim.setValue("COND_VAL", "");
+
+    if (exists("SCENARIO_TSV")) sim.setValue("SCENARIO_TSV", SCENARIO_TSV);
+    else stop("SCENARIO_TSV not provided");
+
+    loadScenarioParams(); // larvaBias, larvaMeanDist, mAdult_L
+
+    // popN output (1-row format per pos)
+    outPath = sim.getValue("OUTFILE_PATH");
+    popPath = outPath + ".popN.tsv";
+    sim.setValue("POPN_PATH", popPath);
+    if (!fileExists(popPath)) {
+        popHeader = "cond\tmpa\trep\tgeneration\tpos\tarea\tN\n";
+        writeFile(popPath, popHeader, append=F);
+    }
+
+    // natal + sizebin outputs (snap gens only)
+    natalPath = outPath + ".natal.tsv";
+    sim.setValue("NATAL_PATH", natalPath);
+    if (!fileExists(natalPath)) {
+        natalHeader = "cond\tmpa\trep\tgeneration\tbornPos\tcurrPos\tn\tprop\n";
+        writeFile(natalPath, natalHeader, append=F);
+    }
+
+    sizebinPath = outPath + ".sizebin.tsv";
+    sim.setValue("SIZEBIN_PATH", sizebinPath);
+    if (!fileExists(sizebinPath)) {
+        sizeHeader = "cond\tmpa\trep\tgeneration\tpos\tarea\tsex\tbin_lo\tbin_hi\tn\tprop\n";
+        writeFile(sizebinPath, sizeHeader, append=F);
+    }
+    
+    agebinPath = outPath + ".agebin.tsv";
+sim.setValue("AGEBIN_PATH", agebinPath);
+if (!fileExists(agebinPath)) {
+    ageHeader = "cond\tmpa\trep\tgeneration\tpos\tarea\tsex\tage\tn\tprop\n";
+    writeFile(agebinPath, ageHeader, append=F);
+}
+
+
+    // trap output (captured individuals)
+    trapPath = outPath + ".trap.tsv";
+    sim.setValue("TRAP_PATH", trapPath);
+    if (!fileExists(trapPath)) {
+        trapHeader = "cond\tmpa\trep\tgeneration\tpos\tarea\tsex\tsize\tegg\tcaptured\tharvested\treason\n";
+        writeFile(trapPath, trapHeader, append=F);
+    }
+
+    // initialize individuals
+    sdG = sim.getValue("sdGrowth");
+    gScale = sim.getValue("gScale");
+    for (ind in sim.subpopulations.individuals) {
+        ind.age = rdunif(1, 1, 20);
+        gg = rnorm(1, 0.0, sdG);
+        gInt = asInteger(round(gg * gScale));
+        ind.tag  = packTag(gInt, 0);
+        ind.tagF = 0.0;
+
+        // birthplace
+        ind.setValue("bornPos", getPos(ind.subpopulation));
+    }
+
+    sim.setValue("resetGen", -1);
+    sim.setValue("nCross", 0);
+    // --- effort control state ---
+sim.setValue("baseNTrap", sim.getValue("nTrap"));   // 元の努力量
+sim.setValue("effMult", 1.0);                       // 規制後の倍率
+sim.setValue("targetHarv", NAN);                    // 規制前の目標（後で確定）
+sim.setValue("preRegHarv", NULL);                   // 規制前収量の履歴（世代ごと）
+
+
+    catn("INIT cond=" + sim.getValue("COND_VAL") +
+         " mpa=" + sim.getValue("MPA_SCEN") +
+         " rep=" + sim.getValue("REP_VAL") +
+         " endGen=" + sim.getValue("endGen") +
+         " sampleEvery=" + sim.getValue("sampleEvery") +
+         " totalN(all)=" + size(sim.subpopulations.individuals));
+}
+
+
+// =======================================================
+// Annual cycle: early() = survival + movement + dd_factor + growth
+// =======================================================
+2:200 early() {
+
+    // ---------------------------------------------------
+    // 0) reset scaling for ALIVE individuals only
+    // ---------------------------------------------------
+    aliveAll = sim.subpopulations.individuals[sim.subpopulations.individuals.fitnessScaling > 0.0];
+    if (size(aliveAll) > 0)
+        aliveAll.fitnessScaling = 1.0;
+
+    // ---------------------------------------------------
+    // 1) early mortality (age==0)
+    // ---------------------------------------------------
+    larvaSurv = sim.getValue("larvaSurv");
+    if (larvaSurv < 1.0) {
+        for (ind in sim.subpopulations.individuals) {
+            if (ind.fitnessScaling == 0.0)
+                next;
+            if (ind.age == 0) {
+                if (runif(1) > larvaSurv)
+                    ind.fitnessScaling = 0.0;
+            }
+        }
+    }
+
+    // ---------------------------------------------------
+    // 2) senescence (Gompertz)
+    // ---------------------------------------------------
+    for (ind in sim.subpopulations.individuals) {
+        if (ind.fitnessScaling == 0.0)
+            next;
+
+        S = S_gompertz(ind.age, sim.getValue("h0_L"), sim.getValue("g_L"));
+        if (runif(1) > S)
+            ind.fitnessScaling = 0.0;
+    }
+
+    // ---------------------------------------------------
+    // 3) adult movement (INTERNAL ONLY), alive-only
+    // ---------------------------------------------------
+    mAL = sim.getValue("mAdult_L");
+    if (mAL > 0.0) {
+        for (sp in sim.subpopulations) {
+            pos = getPos(sp);
+            if (pos < 1 | pos > 10)
+                next;
+            if (sp.individualCount == 0)
+                next;
+
+            alive = sp.individuals[sp.individuals.fitnessScaling > 0.0];
+            if (size(alive) == 0)
+                next;
+
+            movers = alive[runif(size(alive)) < mAL];
+            if (size(movers) == 0)
+                next;
+
+            for (ind in movers) {
+                if (pos == 1) {
+                    sim.subpopulations[2].takeMigrants(ind);
+                } else if (pos == 10) {
+                    sim.subpopulations[9].takeMigrants(ind);
+                } else {
+                    if (runif(1) < 0.5)
+                        sim.subpopulations[pos-1].takeMigrants(ind);
+                    else
+                        sim.subpopulations[pos+1].takeMigrants(ind);
+                }
+            }
+        }
+    }
+
+    // ---------------------------------------------------
+    // 4) density dependence (BH factor stored for recruitment)
+    // ---------------------------------------------------
+    Ki = sim.getValue("K_internal");
+    Ke = sim.getValue("K_external");
+    a  = sim.getValue("dd_a");
+
+for (sp in sim.subpopulations) {
+    pos = getPos(sp);
+    Kp  = ((pos >= 1) & (pos <= 10)) ? Ki else Ke;
+    N   = sp.individualCount;
+
+    // existing BH (gentle)
+    dd = 1.0 / (1.0 + a * (N / Kp));   // in (0,1]
+    sp.setValue("dd_factor", dd);
+
+    // NEW: hard crash when N > K
+    gamma = sim.getValue("gammaOverCap");
+    if (isNULL(gamma)) gamma = 5.0;
+
+    ratio = N / Kp;
+    overcap = 1.0;
+    if (ratio > 1.0) {
+        overcap = exp(-gamma * (ratio - 1.0));
+    }
+
+    // optional floor to avoid absolute zero
+    minFrac = sim.getValue("minRecruitFrac");
+    if (!isNULL(minFrac)) {
+        if (overcap < minFrac) overcap = minFrac;
+    }
+
+    sp.setValue("overcap_factor", overcap);
+
+    sp.fitnessScaling = 1.0;
+}
+
+
+    // ---------------------------------------------------
+    // 5) update size (von Bertalanffy with individual growth deviation)
+    // ---------------------------------------------------
+    gScale = sim.getValue("gScale");
+    for (ind in sim.subpopulations.individuals) {
+        if (ind.fitnessScaling == 0.0)
+            next;
+
+        gInt = unpackGInt(ind.tag);
+        g = gInt / gScale;
+
+        Linf = sim.getValue("Linf_L");
+        k0   = sim.getValue("k_L");
+        k    = k0 * exp(g);
+
+        ind.tagF = Linf * (1.0 - exp(-k * ind.age));
+    }
+}
+
+
+// =======================================================
+// REPRODUCTION (nonWF)  [with heritable growth deviation gInt]
+// =======================================================
+2:200 reproduction() {
+
+    if (individual.fitnessScaling == 0.0)
+        return;
+
+    // once-per-generation reset of egg flags
+    rg = sim.getValue("resetGen");
+    if (isNULL(rg)) rg = -1;
+    if (rg != sim.generation) {
+        sim.setValue("resetGen", sim.generation);
+        sim.setValue("nCross", 0);
+
+for (ind in sim.subpopulations.individuals) {
+    gInt = unpackGInt(ind.tag);
+    egg  = unpackEgg(ind.tag);
+    egg2 = (egg > 0) ? (egg - 1) else 0;   // countdown 2->1->0
+    ind.tag = packTag(gInt, egg2);
+}
+
+    }
+
+    // females only reproduce
+    if (individual.sex != "F")
+        return;
+
+    // already spawned this generation?
+if (unpackEgg(individual.tag) > 0)
+    return;
+
+    // probabilistic breeding attempt
+    pBreed = sim.getValue("pBreed_L");
+    if (runif(1) > pBreed)
+        return;
+
+    // maturity gate
+    if (sim.getValue("useSizeMaturity")) {
+        size = individual.tagF;
+        L50  = sim.getValue("L50");
+        s    = sim.getValue("matSlope");
+        pMat = 1.0 / (1.0 + exp(-s * (size - L50)));
+        if (runif(1) > pMat)
+            return;
+    } else {
+        if (individual.age < sim.getValue("minAge_L"))
+            return;
+    }
+
+    // mate from same patch
+    males = subpop.individuals[subpop.individuals.sex == "M"];
+    if (size(males) == 0)
+        return;
+    mate = males[sample(0:(size(males)-1), 1)];
+
+    // baseline larvae
+    nLarvae = rpois(1, sim.getValue("meanLarvae"));
+    if (nLarvae < 1)
+        return;
+
+    // density-dependent recruitment (BH factor from early())
+dd = subpop.getValue("dd_factor");
+if (isNULL(dd)) dd = 1.0;
+
+oc = subpop.getValue("overcap_factor");
+if (isNULL(oc)) oc = 1.0;
+
+nLarvae = asInteger(round(nLarvae * dd * oc));
+    if (nLarvae < 1)
+        return;
+
+    // ---------------------------------------------------
+    // Heritable growth deviation (gInt) setup:
+    // cache parental gInt BEFORE setting egg flag
+    // ---------------------------------------------------
+    gDad = unpackGInt(mate.tag);
+    gMom = unpackGInt(individual.tag);
+
+    // mark egg=1 for this female this year (keep same gMom)
+    individual.tag = packTag(gMom, 2);
+
+    // larval dispersal (0..11)
+    fromPos  = getPos(subpop);
+    biasDown = sim.getValue("larvaBias");
+    meanDist = sim.getValue("larvaMeanDist");
+
+    // mutation scale for gInt (optional parameter; default 0.2)
+    mutScale = sim.getValue("mutScale");
+    if (isNULL(mutScale)) mutScale = 0.2;
+
+    gScale = sim.getValue("gScale");
+    sdG    = sim.getValue("sdGrowth");
+
+    for (k in 1:nLarvae) {
+        toPos = drawLarvalTargetPos(fromPos, biasDown, meanDist);
+        target = sim.subpopulations[toPos];
+
+        child = target.addCrossed(individual, mate);
+
+        n = sim.getValue("nCross");
+        if (isNULL(n)) n = 0;
+        sim.setValue("nCross", n + 1);
+
+        // mid-parent gInt + small mutation-like deviation
+        gMean = asInteger(floor((gDad + gMom) / 2.0));
+        gMut  = asInteger(round(rnorm(1, 0.0, sdG) * gScale * mutScale));
+        gIntChild = gMean + gMut;
+
+        // optional clipping to avoid extreme exp(g)
+        gMax = asInteger(round(3.0 * sdG * gScale));
+        if (gIntChild >  gMax) gIntChild =  gMax;
+        if (gIntChild < -gMax) gIntChild = -gMax;
+
+        child.tag  = packTag(gIntChild, 0);
+        child.tagF = 0.0;
+
+        // birthplace tag
+        child.setValue("bornPos", fromPos);
+    }
+}
+
+
+
+// =======================================================
+// late(): fishing (trap-based harvest), popN output, snapshots
+// =======================================================
+2:200 late() {
+sim.setValue("harvCountGen", 0);
+
+    // popN every 10 gens
+    if (sim.generation % 10 == 0)
+        writePopSizes();
+
+    // finish if extinction
+    if (size(sim.subpopulations.individuals) == 0) {
+        catn("FINISH reason=EXTINCTION gen=" + sim.generation);
+        sim.simulationFinished();
+        return;
+    }
+
+    // run params at sampleEvery
+    writeObs = (sim.generation % sim.getValue("sampleEvery") == 0);
+    if (writeObs)
+        writeRunParams();
+
+    // fishing/harvest process every generation
+    for (sp in sim.subpopulations) {
+        doTrapHarvest(sp);
+    }
+
+    // snapshots only at specified generations (after harvest)
+    snapG = sim.getValue("snapGens");
+    if (any(sim.generation == snapG)) {
+        writeNatalMatrixSnapshot();
+        writeSizeBinSnapshot();
+        writeAgeBinSnapshot();
+    }
+
+    if (sim.generation == sim.getValue("endGen")) {
+        catn("FINISH reason=ENDGEN gen=" + sim.generation);
+        sim.simulationFinished();
+    }
+    
+    fishStart = sim.getValue("fishStartGen");
+regStart  = sim.getValue("regStartGen");
+gen = sim.generation;
+
+hc = sim.getValue("harvCountGen");
+if (isNULL(hc)) hc = 0;
+
+// ---------- 規制前：目標収量を推定（履歴に貯める） ----------
+if ((gen >= fishStart) & (gen < regStart)) {
+    h = sim.getValue("preRegHarv");
+    if (isNULL(h)) h = NULL;
+    sim.setValue("preRegHarv", c(h, hc));
+}
+
+// 規制開始ちょうどの世代で目標を確定（規制前の平均）
+if (gen == regStart) {
+    h = sim.getValue("preRegHarv");
+    if (!isNULL(h) & (size(h) > 0)) {
+        sim.setValue("targetHarv", mean(h));
+    } else {
+        sim.setValue("targetHarv", NAN);
+    }
+}
+
+// ---------- 規制後：目標に到達するまで段階的に増やす ----------
+if (gen >= regStart) {
+    target = sim.getValue("targetHarv");
+    if (!isNULL(target) & !isNAN(target) & (target > 0.0)) {
+
+        eff = sim.getValue("effMult");
+        if (isNULL(eff)) eff = 1.0;
+
+        // conservative: 上げるだけ（下げない）
+        if (hc < target) {
+
+            // 1世代あたりの増加上限（例：+10%）
+            maxStep = 0.10;
+
+            // 不足率（0..1）
+            deficit = (target - hc) / target;
+
+            // 不足が大きいほど増やすが、上限maxStepでクリップ
+            step = min(maxStep, deficit);
+
+            eff = eff * (1.0 + step);
+
+            // 最大倍率（暴走防止、例：5倍まで）
+            maxEff = 5.0;
+            if (eff > maxEff) eff = maxEff;
+
+            sim.setValue("effMult", eff);
+        } else {
+            // 目標達成以上なら据え置き
+            sim.setValue("effMult", eff);
+        }
+    }
+}
+
+}
+
+
+// =======================================================
+// Harvest process (trap-based) + trap TSV output
+//   Trap record is written only every trapEvery generations
+// =======================================================
+function (void) doTrapHarvest(o<Subpopulation> sp) {
+
+    trapEvery = sim.getValue("trapEvery");
+    writeTrap = (sim.generation % trapEvery == 0);
+
+    pos = getPos(sp);
+    isGhost = (pos < 1 | pos > 10);
+
+    if (sp.individualCount == 0)
+        return;
+
+    // ---- effort: nTrap is dynamic after regulation ----
+    baseNTrap = sim.getValue("baseNTrap");
+    if (isNULL(baseNTrap)) baseNTrap = sim.getValue("nTrap");
+
+    effMult = sim.getValue("effMult");
+    if (isNULL(effMult)) effMult = 1.0;
+
+    fishOn = (sim.generation >= sim.getValue("fishStartGen"));
+    regOn  = (sim.generation >= sim.getValue("regStartGen"));
+
+    nTrap = baseNTrap;
+    if (regOn)
+        nTrap = asInteger(ceil(baseNTrap * effMult));
+
+    // trapEff must be at least length nTrap
+    trapEff = sim.getValue("trapEff");
+    if (isNULL(trapEff)) trapEff = NULL;
+
+    if (size(trapEff) < nTrap) {
+        nAdd = nTrap - size(trapEff);
+        trapEff = c(trapEff, rnorm(nAdd, 0.0, 0.6));
+        sim.setValue("trapEff", trapEff);
+    }
+
+    candidatesPerTrap = sim.getValue("candidatesPerTrap");
+
+    beta  = sim.getValue("betaCatch");
+    alpha = sim.getValue("alphaCatch_L");
+
+    MLS   = sim.getValue("minLegalSize");
+    maxLS = sim.getValue("maxLegalSize");
+
+    protectEgg = sim.getValue("protectEggFemales");
+    isNT = isNoTakePos(pos);
+
+    // if fishery not on, do nothing
+    if (!fishOn)
+        return;
+
+    for (t in 0:(nTrap - 1)) {
+
+        if (sp.individualCount == 0)
+            next;
+
+        inds = sp.sampleIndividuals(min(candidatesPerTrap, sp.individualCount));
+
+        for (ind in inds) {
+
+            if (ind.fitnessScaling == 0.0)
+                next;
+
+            size = ind.tagF;
+
+            // hard threshold: traps do not capture individuals below minTrapSize
+            minTrapSize = sim.getValue("minTrapSize");
+            if (!isNULL(minTrapSize) & (size < minTrapSize))
+                next;
+
+            pCapture = 1.0 / (1.0 + exp(-(alpha + beta * size + trapEff[t])));
+
+            if (runif(1) >= pCapture)
+                next;
+
+            // captured
+            eggFlag = 0;
+            if (ind.sex == "F")
+                eggFlag = unpackEgg(ind.tag);
+
+            harvested = F;
+            reason = "captured_no_action";
+
+            if (!regOn) {
+                // pre-regulation: harvest everywhere (ghost included)
+                harvested = T;
+                reason = "preReg_harvestAll";
+
+            } else {
+                // regulation period
+                if (isGhost) {
+                    // external treated as open-like
+                    if ((size >= MLS) & (size <= maxLS) & !(protectEgg & (eggFlag > 0))) {
+                        harvested = T;
+                        reason = "reg_external_slot_harvest";
+                    } else {
+                        harvested = F;
+                        reason = "reg_external_release";
+                    }
+
+                } else if (isNT) {
+                    harvested = F;
+                    reason = "reg_noTake_release";
+
+                } else {
+                    // open patches with slot + egg protection
+                    if ((size >= MLS) & (size <= maxLS) & !(protectEgg & (eggFlag > 0))) {
+                        harvested = T;
+                        reason = "reg_open_slot_harvest";
+                    } else {
+                        harvested = F;
+                        if (protectEgg & (eggFlag > 0))
+                            reason = "reg_open_release_egg";
+                        else if (size < MLS)
+                            reason = "reg_open_release_belowSlot";
+                        else if (size > maxLS)
+                            reason = "reg_open_release_aboveSlot";
+                        else
+                            reason = "reg_open_release_other";
+                    }
+                }
+            }
+
+            // log (captured always)
+            if (writeTrap)
+                logTrapEvent(reason, sp, ind, harvested);
+
+            // execute harvest via one single pathway (no misses)
+            if (harvested)
+                harvestAndCount(ind);
+        }
+    }
+}
+
+
+function (void) harvestAndCount(o<Individual> ind) {
+    ind.fitnessScaling = 0.0;
+
+    hc = sim.getValue("harvCountGen");
+    if (isNULL(hc)) hc = 0;
+    sim.setValue("harvCountGen", hc + 1);
+}
+
+
+
+
+// =======================================================
+// popN output (1-row per pos)
+// =======================================================
+function (void) writePopSizes(void) {
+    popPath = sim.getValue("POPN_PATH");
+    if (isNULL(popPath))
+        return;
+
+    repVal  = sim.getValue("REP_VAL");
+    condVal = sim.getValue("COND_VAL");
+    mpaVal  = sim.getValue("MPA_SCEN");
+
+    for (pos in 1:10) {
+        sp = sim.subpopulations[pos];
+
+        line =
+            condVal + "\t" +
+            mpaVal + "\t" +
+            repVal + "\t" +
+            sim.generation + "\t" +
+            pos + "\t" +
+            areaLabel(sp) + "\t" +
+            sp.individualCount + "\n";
+
+        writeFile(popPath, line, append=T);
+    }
+}
+
+
+// =======================================================
+// scenario params loader
+// =======================================================
+function (void) loadScenarioParams(void) {
+    cond = sim.getValue("COND_VAL");
+    tsv  = sim.getValue("SCENARIO_TSV");
+    lines = readFile(tsv);
+
+    for (i in 1:(size(lines)-1)) {
+        fields = strsplit(lines[i], "\t");
+        if (size(fields) < 4)
+            next;
+
+        if (fields[0] == cond) {
+            sim.setValue("larvaBias",     asFloat(fields[1]));
+            sim.setValue("larvaMeanDist", asFloat(fields[2]));
+            sim.setValue("mAdult_L",      asFloat(fields[3]));
+            return;
+        }
+    }
+
+    stop("cond not found in scenario TSV: " + cond);
+}
