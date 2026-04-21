@@ -140,3 +140,130 @@ p <- ggplot(gene_summary, aes(x = ortholog_ratio)) +
 ggsave("Figure5_histogram.png", p, width = 6.5, height = 7, dpi = 300)
 
 message("Done: 13-species presence + retention ratio + stats + histogram.")
+
+
+
+
+
+
+###
+
+# conservation rato
+ratio_list <- df2 %>%
+  group_by(category) %>%
+  summarise(ratios = list(retention_ratio), .groups = "drop")
+
+female_ratios <- ratio_list$ratios[[which(ratio_list$category == "MammaryFemaleOnly")]]
+mammary_ratios <- ratio_list$ratios[[which(ratio_list$category == "MammaryGlandOnly")]]
+gland_mammary_ratios <- ratio_list$ratios[[which(ratio_list$category == "GlandularPlusMammaryGland")]]
+
+# KS test
+ks_female_vs_mammary <- ks.test(female_ratios, mammary_ratios)
+ks_female_vs_gland_mammary <- ks.test(female_ratios, gland_mammary_ratios)
+ks_mammary_vs_gland_mammary <- ks.test(mammary_ratios, gland_mammary_ratios)
+
+# random
+set.seed(1)
+n_iter <- 1000
+
+all_retention <- ortho_genes %>%
+  mutate(retention_ratio = rowMeans(across(all_of(species_cols)), na.rm = TRUE)) %>%
+  pull(retention_ratio)
+
+obs_summary <- df2 %>%
+  group_by(category) %>%
+  summarise(
+    n = n(),
+    observed_median = median(retention_ratio, na.rm = TRUE),
+    observed_mean = mean(retention_ratio, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+random_results <- lapply(seq_len(nrow(obs_summary)), function(i) {
+  n_i <- obs_summary$n[i]
+  cat_i <- obs_summary$category[i]
+  
+  rand_medians <- replicate(n_iter, {
+    median(sample(all_retention, size = n_i, replace = FALSE), na.rm = TRUE)
+  })
+  
+  rand_means <- replicate(n_iter, {
+    mean(sample(all_retention, size = n_i, replace = FALSE), na.rm = TRUE)
+  })
+  
+  data.frame(
+    category = cat_i,
+    iter = seq_len(n_iter),
+    random_median = rand_medians,
+    random_mean = rand_means
+  )
+}) %>%
+  bind_rows()
+
+empirical_test <- obs_summary %>%
+  left_join(
+    random_results %>%
+      group_by(category) %>%
+      summarise(
+        empirical_p_median_high = mean(random_median >= first(obs_summary$observed_median[obs_summary$category == category])),
+        empirical_p_mean_high   = mean(random_mean   >= first(obs_summary$observed_mean[obs_summary$category == category])),
+        random_median_mean = mean(random_median),
+        random_mean_mean = mean(random_mean),
+        .groups = "drop"
+      ),
+    by = "category"
+  )
+
+
+
+
+random_results$category <- factor(
+  random_results$category,
+  levels = c(
+    "GlandularPlusMammaryGland",
+    "MammaryGlandOnly",
+    "MammaryFemaleOnly"
+  )
+)
+
+obs_summary$category <- factor(
+  obs_summary$category,
+  levels = c(
+    "GlandularPlusMammaryGland",
+    "MammaryGlandOnly",
+    "MammaryFemaleOnly"
+  )
+)
+
+
+p_random <- ggplot(random_results, aes(x = category, y = random_median, fill = category)) +
+  geom_boxplot(color = "black") +
+  geom_point(
+    data = obs_summary,
+    aes(x = category, y = observed_median),
+    shape = 18, size = 3.5, color = "black"
+  ) +
+  scale_fill_manual(
+    values = c(
+      GlandularPlusMammaryGland = "#F1605DFF",
+      MammaryGlandOnly = "#FEAF77FF",
+      MammaryFemaleOnly = "#FCFDBFFF"
+    )
+  ) +
+  scale_x_discrete(
+    labels = c(
+      GlandularPlusMammaryGland =
+        "Epithelial \nsecretory–enriched \n(n = 711)",
+      MammaryGlandOnly =
+        "Breast-enriched\n(n = 189)",
+      MammaryFemaleOnly =
+        "Female \nbreast-biased \n(n = 617)"
+    )
+  ) +
+  theme_bw() +
+  ylab("Random median retention ratio") +
+  theme(
+    axis.text.x = element_text(size = 10, lineheight = 0.9),
+    panel.grid = element_blank()
+  )
+

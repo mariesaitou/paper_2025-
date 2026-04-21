@@ -187,3 +187,452 @@ overlap_df <- merge(overlap_df, label_tbl, by.x="tissue", by.y="SMTSD", all.x=TR
 write.table(overlap_df, "module_overlap_map.tsv", sep="\t", quote=FALSE, row.names=FALSE)
 
 message("Analysis complete. Results saved to: WGCNA_per_tissue_results.rds, mix_index.tsv, module_overlap_map.tsv")
+
+
+
+
+
+######## Module preservation analysis
+
+
+library(WGCNA)
+library(dplyr)
+library(tibble)
+library(tidyr)
+library(pheatmap)
+library(viridis)
+library(gprofiler2)
+library(purrr)
+library(ggplot2)
+library(stringr)
+
+options(stringsAsFactors = FALSE)
+allowWGCNAThreads()
+
+
+
+#!/usr/bin/env Rscript
+
+suppressPackageStartupMessages({
+  library(WGCNA)
+  library(dplyr)
+  library(tibble)
+  library(ggplot2)
+})
+
+options(stringsAsFactors = FALSE)
+allowWGCNAThreads()
+
+args <- commandArgs(trailingOnly = TRUE)
+in_dir  <- if (length(args) >= 1) args[[1]] else "."
+out_dir <- if (length(args) >= 2) args[[2]] else "."
+
+dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
+
+message("Input dir: ", normalizePath(in_dir, mustWork = FALSE))
+message("Output dir: ", normalizePath(out_dir, mustWork = FALSE))
+
+
+
+
+
+# =========================
+rds_file <- file.path(in_dir, "WGCNA_per_tissue_results_adipoReg_breastOnly.rds")
+
+if (!file.exists(rds_file)) {
+  stop("Input RDS file not found: ", rds_file)
+}
+
+message("Reading RDS: ", rds_file)
+obj <- readRDS(rds_file)
+
+# =========================
+# Tissues
+# =========================
+tissues_use <- c(
+  "Breast - Mammary Tissue",
+  "Minor Salivary Gland",
+  "Pancreas",
+  "Stomach",
+  "Skin - Not Sun Exposed (Suprapubic)",
+  "Small Intestine - Terminal Ileum"
+)
+
+missing_tissues <- setdiff(tissues_use, names(obj$per_tissue))
+if (length(missing_tissues) > 0) {
+  stop("These tissues are missing in obj$per_tissue: ",
+       paste(missing_tissues, collapse = ", "))
+}
+
+message("Tissues used:")
+message(paste0("  - ", tissues_use, collapse = "\n"))
+
+# =========================
+# Common genes
+# =========================
+common_genes <- Reduce(
+  intersect,
+  lapply(obj$per_tissue[tissues_use], function(x) colnames(x$datExpr))
+)
+
+if (length(common_genes) < 1000) {
+  stop("Too few common genes found: ", length(common_genes))
+}
+
+message("Number of common genes: ", length(common_genes))
+
+# =========================
+# multiExpr 
+# =========================
+multiExpr <- lapply(obj$per_tissue[tissues_use], function(x) {
+  dat <- x$datExpr[, common_genes, drop = FALSE]
+  list(data = as.data.frame(dat))
+})
+names(multiExpr) <- tissues_use
+
+# =========================
+# Breast reference modules
+# =========================
+breast_name <- "Breast - Mammary Tissue"
+breast_labels <- obj$per_tissue[[breast_name]]$module_labels[common_genes]
+
+if (any(is.na(breast_labels))) {
+  stop("NA found in breast_labels after gene matching.")
+}
+
+message("Breast module sizes on common genes:")
+print(table(breast_labels))
+
+multiColor <- lapply(tissues_use, function(x) breast_labels)
+names(multiColor) <- tissues_use
+
+
+n_perm <- as.integer(Sys.getenv("NPERM", unset = "200"))
+if (is.na(n_perm) || n_perm < 1) {
+  stop("Invalid NPERM value.")
+}
+message("nPermutations = ", n_perm)
+
+# =========================
+# module preservation
+# =========================
+set.seed(1)
+
+message("Starting modulePreservation at: ", Sys.time())
+
+mp <- modulePreservation(
+  multiData = multiExpr,
+  multiColor = multiColor,
+  referenceNetworks = which(names(multiExpr) == breast_name),
+  networkType = "signed",
+  nPermutations = n_perm,
+  verbose = 3
+)
+
+message("Finished modulePreservation at: ", Sys.time())
+
+saveRDS(
+  mp,
+  file = file.path(out_dir, paste0("module_preservation_breast_reference_", n_perm, "perm.rds"))
+)
+
+
+extract_preservation <- function(mp_obj, ref_name) {
+  ref_idx <- which(names(mp_obj$preservation$Z) == ref_name)
+  
+  out <- lapply(seq_along(mp_obj$preservation$Z[[ref_idx]]), function(i) {
+    test_name <- names(mp_obj$preservation$Z[[ref_idx]])[i]
+    
+    zdf <- mp_obj$preservation$Z[[ref_idx]][[i]] %>%
+      as.data.frame() %>%
+      rownames_to_column("module")
+    
+    odf <- mp_obj$preservation$observed[[ref_idx]][[i]] %>%
+      as.data.frame() %>%
+      rownames_to_column("module")
+    
+    z_col <- grep("Zsummary", colnames(zdf), value = TRUE)[1]
+    mr_col <- grep("medianRank", colnames(odf), value = TRUE)[1]
+    size_col <- grep("moduleSize|size", colnames(odf), value = TRUE)[1]
+    
+    if (is.na(z_col)) stop("Zsummary column not found for ", test_name)
+    if (is.na(mr_col)) stop("medianRank column not found for ", test_name)
+    if (is.na(size_col)) stop("moduleSize column not found for ", test_name)
+    
+    zdf %>%
+      select(module, Zsummary = all_of(z_col)) %>%
+      left_join(
+        odf %>% select(module, medianRank = all_of(mr_col), moduleSize = all_of(size_col)),
+        by = "module"
+      ) %>%
+      mutate(test_tissue = test_name)
+  }) %>%
+    bind_rows()
+  
+  out
+}
+
+pres_df <- extract_preservation(mp, ref_name = breast_name) %>%
+  filter(!module %in% c("gold", "grey")) %>%
+  mutate(
+    preservation_class = case_when(
+      Zsummary > 10 ~ "Strong",
+      Zsummary > 2  ~ "Moderate",
+      TRUE          ~ "Weak_or_none"
+    )
+  ) %>%
+  arrange(test_tissue, desc(Zsummary))
+
+write.csv(
+  pres_df,
+  file = file.path(out_dir, paste0("module_preservation_summary_", n_perm, "perm.csv")),
+  row.names = FALSE
+)
+
+# =========================
+p_all <- ggplot(pres_df, aes(x = test_tissue, y = Zsummary)) +
+  geom_hline(yintercept = c(2, 10), linetype = 2) +
+  geom_point(size = 2) +
+  facet_wrap(~ module, scales = "free_x") +
+  coord_flip() +
+  theme_bw() +
+  labs(
+    x = NULL,
+    y = "Module preservation Zsummary"
+  )
+
+ggsave(
+  filename = file.path(out_dir, paste0("module_preservation_all_modules_", n_perm, "perm.pdf")),
+  plot = p_all,
+  width = 14,
+  height = 10
+)
+
+if (nrow(module2_df) > 0) {
+  p_m2 <- ggplot(module2_df, aes(x = reorder(test_tissue, Zsummary), y = Zsummary)) +
+    geom_hline(yintercept = c(2, 10), linetype = 2) +
+    geom_point(size = 3) +
+    coord_flip() +
+    theme_bw() +
+    labs(
+      x = NULL,
+      y = "Module preservation Zsummary",
+      title = "Preservation of Breast Module2"
+    )
+  
+  ggsave(
+    filename = file.path(out_dir, paste0("module2_preservation_", n_perm, "perm.pdf")),
+    plot = p_m2,
+    width = 7,
+    height = 4.5
+  )
+}
+
+
+# =========================
+sink(file.path(out_dir, paste0("module_preservation_log_", n_perm, "perm.txt")))
+cat("Run completed at:", as.character(Sys.time()), "\n\n")
+cat("Input RDS:", rds_file, "\n")
+cat("Common genes:", length(common_genes), "\n")
+cat("nPermutations:", n_perm, "\n\n")
+cat("Module counts in breast on common genes:\n")
+print(table(breast_labels))
+cat("\nSummary of preservation classes:\n")
+print(table(pres_df$preservation_class, useNA = "ifany"))
+cat("\nTop rows of pres_df:\n")
+print(utils::head(pres_df, 20))
+sink()
+
+message("All done.")
+
+
+
+# Downstream visualization and GO
+
+# --------------------------------------------------
+# 1. Load module preservation results
+# --------------------------------------------------
+mp <- readRDS("module_preservation_breast_reference_200perm.rds")
+
+# --------------------------------------------------
+# 2. Extract module preservation statistics
+# --------------------------------------------------
+extract_preservation <- function(mp_obj) {
+  ref_name <- names(mp_obj$preservation$Z)[1]
+  test_names <- names(mp_obj$preservation$Z[[ref_name]])
+  
+  bind_rows(lapply(test_names, function(test_name) {
+    x <- mp_obj$preservation$Z[[ref_name]][[test_name]]
+    
+    if (is.logical(x) && length(x) == 1 && is.na(x)) {
+      return(NULL)
+    }
+    
+    tibble(
+      module = rownames(x),
+      Zsummary = x$Zsummary.pres,
+      test_tissue = test_name
+    )
+  }))
+}
+
+pres_df <- extract_preservation(mp) %>%
+  filter(!module %in% c("gold", "grey")) %>%
+  mutate(
+    test_tissue = recode(
+      sub("^inColumnsAlsoPresentIn\\.", "", test_tissue),
+      "Minor Salivary Gland" = "Salivary",
+      "Pancreas" = "Pancreas",
+      "Skin - Not Sun Exposed (Suprapubic)" = "Skin",
+      "Stomach" = "Stomach",
+      "Small Intestine - Terminal Ileum" = "Intestine"
+    )
+  )
+
+# --------------------------------------------------
+# 3. Prepare heatmap matrix
+# --------------------------------------------------
+mat <- pres_df %>%
+  pivot_wider(names_from = test_tissue, values_from = Zsummary) %>%
+  column_to_rownames("module") %>%
+  as.matrix()
+
+num_mat <- ifelse(mat >= 10, sprintf("%.1f", mat), "")
+rownames(num_mat) <- rownames(mat)
+colnames(num_mat) <- colnames(mat)
+
+# --------------------------------------------------
+# 4. Draw Zsummary heatmap
+# --------------------------------------------------
+pheatmap(
+  mat,
+  color = viridis(100),
+  display_numbers = num_mat,
+  number_color = "black",
+  cluster_rows = TRUE,
+  cluster_cols = TRUE
+)
+
+# --------------------------------------------------
+# 5. Extract gene lists for selected modules
+# --------------------------------------------------
+breast_labels <- obj$per_tissue[["Breast - Mammary Tissue"]]$module_labels
+
+modules_to_extract <- c("Module11", "Module7", "Module14", "Module6")
+
+module_gene_lists <- lapply(modules_to_extract, function(m) {
+  names(breast_labels[breast_labels == m])
+})
+names(module_gene_lists) <- modules_to_extract
+
+for (m in modules_to_extract) {
+  write.table(
+    module_gene_lists[[m]],
+    file = paste0(m, "_genes.txt"),
+    quote = FALSE,
+    row.names = FALSE,
+    col.names = FALSE
+  )
+}
+
+# --------------------------------------------------
+# 6. Run g:Profiler enrichment
+# --------------------------------------------------
+gprof_results <- lapply(names(module_gene_lists), function(m) {
+  gost(
+    query = module_gene_lists[[m]],
+    organism = "hsapiens",
+    correction_method = "fdr",
+    sources = c("GO:BP", "GO:CC", "GO:MF", "REAC")
+  )
+})
+names(gprof_results) <- names(module_gene_lists)
+
+# --------------------------------------------------
+# 7. Save enrichment tables
+# --------------------------------------------------
+for (m in names(gprof_results)) {
+  res <- gprof_results[[m]]$result
+  
+  if (!is.null(res) && nrow(res) > 0) {
+    res_out <- res %>%
+      select(
+        query, significant, p_value, term_size, query_size,
+        intersection_size, precision, recall,
+        term_id, source, term_name,
+        effective_domain_size, source_order
+      )
+    
+    write.csv(res_out, paste0(m, "_gprofiler.csv"), row.names = FALSE)
+  }
+}
+
+# --------------------------------------------------
+# 8. Prepare enrichment plot data
+# --------------------------------------------------
+gprof_df <- map_dfr(names(gprof_results), function(m) {
+  res <- gprof_results[[m]]$result
+  if (is.null(res) || nrow(res) == 0) return(NULL)
+  
+  res %>%
+    mutate(module = m)
+})
+
+plot_df <- gprof_df %>%
+  arrange(module, p_value) %>%
+  group_by(module) %>%
+  slice_head(n = 5) %>%
+  ungroup() %>%
+  mutate(
+    module = factor(module, levels = c("Module11", "Module7", "Module14", "Module6")),
+    term_name = str_wrap(term_name, width = 24),
+    source = factor(source, levels = c("GO:BP", "GO:CC", "GO:MF", "REAC"))
+  )
+
+shape_map <- c(
+  "GO:BP" = 16,
+  "GO:CC" = 15,
+  "GO:MF" = 17,
+  "REAC"  = 18
+)
+
+# --------------------------------------------------
+# 9. Draw enrichment bubble plot
+# --------------------------------------------------
+p <- ggplot(
+  plot_df,
+  aes(
+    x = -log10(p_value),
+    y = reorder(term_name, -log10(p_value))
+  )
+) +
+  geom_point(
+    aes(size = intersection_size, shape = source),
+    color = "#0a2a92"
+  ) +
+  scale_shape_manual(values = shape_map) +
+  facet_wrap(
+    ~ module,
+    scales = "free_y",
+    ncol = 2
+  ) +
+  theme_bw() +
+  labs(
+    x = expression(-log[10](p)),
+    y = NULL,
+    size = "Intersection size",
+    shape = "Source"
+  ) +
+  theme(
+    strip.background = element_blank(),
+    strip.text = element_text(face = "plain", size = 14),
+    panel.grid.minor = element_blank(),
+    panel.grid.major.y = element_line(linewidth = 0.3),
+    axis.text.y = element_text(size = 11),
+    axis.text.x = element_text(size = 11),
+    axis.title.x = element_text(size = 13),
+    legend.title = element_text(size = 12),
+    legend.text = element_text(size = 11)
+  )
+
+p

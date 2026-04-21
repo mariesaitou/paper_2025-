@@ -76,7 +76,7 @@ Constructs WGCNA networks for mammary tissue
 
 Computes module eigengenes and module membership
 
-Compares mammary modules to other tissues using Jaccard similarity
+Compares mammary modules to other tissues using Jaccard similarity and module preservation analysis
 
 Performs permutation tests for module overlap significance
 
@@ -94,7 +94,10 @@ Estimates conservation rates and one-to-one orthology
 
 Produces summary tables for evolutionary retention analyses
 
-Focuses on a defined set of representative species
+Computes median ortholog retention ratios from 1,000 random gene sets matched in size to each category
+
+
+
 
 breast_single_cell.R
 
