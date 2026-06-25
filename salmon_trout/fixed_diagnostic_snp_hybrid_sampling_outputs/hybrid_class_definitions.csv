@@ -1,0 +1,11 @@
+class_id,expected_ancestry_ratio,salmon_ancestry,trout_ancestry,genotype_model,bc_generation,true_is_hybrid,expected_q_trout,expected_heterozygosity,weight,probability_among_hybrids
+nonhybrid_Salmon,Salmon 1 : Trout 0,1,0,nonhybrid_Salmon,NA,FALSE,0,0,NA,NA
+nonhybrid_Trout,Salmon 0 : Trout 1,0,1,nonhybrid_Trout,NA,FALSE,1,0,NA,NA
+F1,Salmon 0.5 : Trout 0.5,0.5,0.5,F1,NA,TRUE,0.5,1,1,0.125
+F2,Salmon 0.5 : Trout 0.5,0.5,0.5,F2,NA,TRUE,0.5,0.5,1,0.125
+BC1_to_Salmon,Salmon 0.75 : Trout 0.25,0.75,0.25,BC_to_Salmon,1,TRUE,0.25,0.5,1,0.125
+BC2_to_Salmon,Salmon 0.875 : Trout 0.125,0.875,0.125,BC_to_Salmon,2,TRUE,0.125,0.25,1,0.125
+BC3_to_Salmon,Salmon 0.9375 : Trout 0.0625,0.9375,0.0625,BC_to_Salmon,3,TRUE,0.0625,0.125,1,0.125
+BC1_to_Trout,Salmon 0.25 : Trout 0.75,0.25,0.75,BC_to_Trout,1,TRUE,0.75,0.5,1,0.125
+BC2_to_Trout,Salmon 0.125 : Trout 0.875,0.125,0.875,BC_to_Trout,2,TRUE,0.875,0.25,1,0.125
+BC3_to_Trout,Salmon 0.0625 : Trout 0.9375,0.0625,0.9375,BC_to_Trout,3,TRUE,0.9375,0.125,1,0.125

@@ -5,3 +5,4 @@
 lob_SLiM/*.tsv
 !lob_SLiM/all.tsv
 !lob_SLiM/all.tsv.natal.tsv.gz
+.DS_Store
