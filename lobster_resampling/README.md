@@ -1,77 +1,94 @@
 # lobster_resampling
 
-Resampling-based validation of a 79-SNP panel for hybrid detection across generations in European lobster, using empirical genotype data and snapclust (adegenet).
+Empirical resampling workflow for validating a reduced SNP panel for hybrid detection across generations in European lobster.
 
-This repository contains scripts and summary outputs for:
-- Generating resampled hybrid classes (parentals, F1, and backcross generations)
-- Performing hybrid assignment using snapclust
-- Summarising classification accuracy across sampling depths
+This repository contains R scripts used to evaluate how a 79-SNP panel performs when assigning pure species, F1 hybrids, and later-generation backcrosses between European lobster (*Homarus gammarus*) and American lobster (*H. americanus*). The workflow generates synthetic hybrid and backcross genotypes by resampling from observed multilocus genotypes, rather than using forward-time demographic simulations, and evaluates hybrid assignment with `snapclust` from `adegenet`.
 
-## Contents
+## Repository contents
 
-- lobster_resampling.R  
-  Main analysis script implementing empirical resampling and snapclust-based hybrid assignment.
+- `01_empirical_resampling_snapclust.R`  
+  Main empirical resampling and `snapclust` classification workflow. This script generates resampled parental, F1, and backcross genotype classes from empirical genotype data, runs hybrid assignment, and summarises classification performance across sampling depths.
 
-- snapclust_resampling_summary_table.tsv  
-  Summary table reporting strict classification accuracy across hybrid classes and sample sizes.
+- `02_parental_reference_downsampling.R`  
+  Sensitivity analysis for parental reference size. The European parental reference is repeatedly downsampled to match the smaller American parental reference, and the resampling/classification workflow is rerun to evaluate whether unequal parental reference sizes affect assignment results.
 
-- snapclust_resampling_runmeta.rds  
-  Metadata for resampling runs, including replicate structure and random seeds.
+- `03_balanced_vs_full_reference_comparison.R`  
+  Direct comparison between the full-reference and balanced-reference analyses. This script compares classification outcomes from the full parental reference dataset and the downsampled balanced-reference dataset.
 
-## Contents
+- `04_ld_descriptive_summary.R`  
+  Descriptive linkage disequilibrium analysis of the SNP panel. This script summarises pairwise LD among loci and is used as a diagnostic description of marker independence. LD-pruned reclassification is not part of the current primary workflow.
 
-- lobster_resampling.R  
-  Main analysis script implementing empirical resampling and snapclust-based hybrid assignment.
+## Analysis overview
 
-- snapclust_resampling_summary_table.tsv  
-  Summary table reporting strict classification accuracy across hybrid classes and sample sizes.
+The main workflow evaluates SNP-panel performance under empirically generated hybrid classes. The analysis focuses on:
 
-- snapclust_resampling_runmeta.rds  
-  Metadata for resampling runs, including replicate structure and random seeds.
+1. Generating resampled multilocus genotypes for parental, F1, and backcross classes.
+2. Running `snapclust`-based hybrid assignment.
+3. Evaluating classification accuracy under strict and nearest-class criteria.
+4. Summarising posterior probabilities as an indicator of assignment reliability.
+5. Testing whether unequal parental reference sample sizes materially affect classification results.
+6. Describing linkage disequilibrium among SNPs as a marker-panel diagnostic.
 
-- LDcheck.R  
-  Script for evaluating linkage disequilibrium among SNPs within the parental reference groups. This script calculates pairwise r² values separately for the European and American references, exports LD summary tables, identifies SNP pairs with r² > 0.2, and generates the LD heatmap used for supplementary visualization.
-
-- LDprun.R  
-  Script for repeating the empirical resampling and snapclust classification analysis after LD pruning. SNPs involved in high-LD pairs identified by `LDcheck.R` are removed, and the full classification workflow is rerun on the LD-pruned marker panel.
-
-- Downsampling.R  
-  Script for the parental reference size sensitivity analysis. The European parental reference is randomly subsampled to match the American parental reference size (n = 38), after which the empirical resampling and snapclust classification workflow is repeated.
+The main biological expectation is that pure species and F1 hybrids should be classified with high reliability, whereas uncertainty is expected to increase among adjacent later-generation backcross classes.
 
 ## Requirements
 
-- R (tested with R 4.3.3)
-- R packages:
-  - adegenet
-  - dplyr
-  - tidyr
-  - tibble
-  - ggplot2
-  - stringr
+The scripts require R and the following R packages:
+
+- `adegenet`
+- `dplyr`
+- `tidyr`
+- `tibble`
+- `ggplot2`
+- `stringr`
+- `purrr`
+- `readr`
+
+The analysis was developed for use with an empirical SNP genotype dataset stored as an `adegenet` `genind` object.
 
 ## Input data
 
-The analysis relies on an empirical SNP genotype dataset stored as an adegenet genind object.
-The dataset comprises 1,591 individuals genotyped at 79 SNP loci.
-
-The SNP panel and empirical genotypes originate from:
+The analysis uses empirical genotype data for 1,591 individuals genotyped at 79 SNP loci. The SNP panel and empirical genotypes originate from:
 
 Ellis, C. D., Jenkins, T. L., Svanberg, L., Eriksson, S. P. & Stevens, J. R.  
 Crossing the pond: genetic assignment detects lobster hybridisation.  
-Scientific Reports 10, 7781 (2020).
+*Scientific Reports* 10, 7781 (2020).
 
-Empirical genotype data are not redistributed here. Users must ensure appropriate permission for data access and reuse.
+The empirical genotype dataset is not redistributed in this repository. Users must ensure appropriate permission for data access and reuse.
+
+Input file paths are defined near the top of each script and may need to be edited for local use.
 
 ## How to run
 
-From the repository directory:
+From the repository directory, run the scripts in the following order:
 
-Rscript lobster_resampling.R
+```bash
+Rscript 01_empirical_resampling_snapclust.R
+Rscript 02_parental_reference_downsampling.R
+Rscript 03_balanced_vs_full_reference_comparison.R
+Rscript 04_ld_descriptive_summary.R
 
-Input file paths are defined at the top of the script and may need to be adjusted locally.
 
-## Reproducibility notes
+The main empirical resampling script should be run first because later comparison scripts depend on its outputs.
 
-- All resampling runs are controlled by explicit random seeds.
-- snapclust assigns parental clusters as A and B without biological labels; downstream accuracy evaluation accounts for possible A/B label inversion.
+Outputs
 
+The scripts generate summary tables and diagnostic outputs describing:
+
+strict classification accuracy
+nearest-class classification accuracy
+posterior probability distributions
+classification performance across sampling depths
+effects of balancing parental reference sample sizes
+pairwise LD among SNP markers
+
+Output file names and directories are defined inside the individual scripts.
+
+Reproducibility notes
+
+All resampling analyses use explicit random seeds. Because snapclust cluster labels are arbitrary, downstream classification summaries account for possible inversion of parental cluster labels.
+
+Scope of the current workflow
+
+The current repository focuses on empirical resampling, parental-reference sensitivity analysis, full-versus-balanced reference comparison, and descriptive LD assessment. Earlier exploratory scripts for LD pruning or older downsampling implementations are not part of the current documented workflow.
+EOF
