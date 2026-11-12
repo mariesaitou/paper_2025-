@@ -16,3 +16,10 @@ This directory contains the compact set of files needed to inspect the 302 candi
 - `BayesTyper_SV_callrate80_with_population_membership.tsv.gz`: integrated table for 20,572 SVs retained with the 80% call-rate filter. It combines chromosome, position, SV type, SV size, allele counts, call rates, population-presence indicators, population-specific allele frequencies, the number of populations in which each SV is present, and the population-membership label for European farmed, European wild, North American farmed, and North American wild groups.
 
 The central comparison is whether European farmed and North American farmed show Relate signal at the same positions within a region. Raw signal counts should be interpreted together with region width, filtered SNP count, and analysed window count.
+
+## Candidate-region review
+
+- [Discussion: Potential evolutionary scenarios in candidate regions](https://github.com/mariesaitou/paper_2025-/discussions/1)
+- [Region-by-region review with PCA, haplotype heatmap, dotplot, Relate, DoLoReS, and collaborator comments](interpretable_evolutionary_scenarios_review.md)
+- [Scenario and representative-region list](interpretable_evolutionary_scenarios.tsv)
+- [302-region coordinates](302SVs.tsv)
