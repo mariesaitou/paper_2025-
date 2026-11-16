@@ -2,7 +2,7 @@
 
 Each region is a separate expandable section. Open a region to see its PCA preview, haplotype heatmap and dotplot links, Relate counts by population, DoLoReS results, and a comment field.
 
-Source files: [`interpretable_evolutionary_scenarios.tsv`](interpretable_evolutionary_scenarios.tsv), [`302SVs.tsv`](302SVs.tsv), [`merged_302_regions_window_PCA.pdf`](merged_302_regions_window_PCA.pdf), [`302_biological_hypotheses.pdf`](302_biological_hypotheses.pdf), [`merged_302_regions_PC1_PC2_trajectories.pdf`](merged_302_regions_PC1_PC2_trajectories.pdf), [`genomewide_relate_local_pca_scan.pdf`](genomewide_relate_local_pca_scan.pdf), [`relate_local_pca_scan_by_chromosome_29pages.pdf`](relate_local_pca_scan_by_chromosome_29pages.pdf), [`merot_MDS_outlier_plots.pdf`](merot_MDS_outlier_plots.pdf), [`merot_candidate_diagnostic_plots.pdf`](merot_candidate_diagnostic_plots.pdf), [`integrated_merot_locus_diagnostic_plots.pdf`](integrated_merot_locus_diagnostic_plots.pdf), [`lostruct_corner_plots.pdf`](lostruct_corner_plots.pdf), [`merged_302_regions_window_haplotype_heatmaps.pdf`](merged_302_regions_window_haplotype_heatmaps.pdf), [`302_loci_dotplots.pdf`](302_loci_dotplots.pdf), [`Relate_DetectSelection_significant_p1e-4.tsv`](Relate_DetectSelection_significant_p1e-4.tsv), and [`DoLoReS_significant_p1e-4.tsv`](DoLoReS_significant_p1e-4.tsv).
+Source files: [`interpretable_evolutionary_scenarios.tsv`](interpretable_evolutionary_scenarios.tsv), [`302SVs.tsv`](302SVs.tsv), [`merged_302_regions_window_PCA.pdf`](merged_302_regions_window_PCA.pdf), [`302_biological_hypotheses.pdf`](302_biological_hypotheses.pdf), [`merged_302_regions_PC1_PC2_trajectories.pdf`](merged_302_regions_PC1_PC2_trajectories.pdf), [`genomewide_relate_local_pca_scan.pdf`](genomewide_relate_local_pca_scan.pdf), [`relate_local_pca_scan_by_chromosome_29pages.pdf`](relate_local_pca_scan_by_chromosome_29pages.pdf), [`merot_MDS_outlier_plots.pdf`](merot_MDS_outlier_plots.pdf), [`merot_candidate_diagnostic_plots.pdf`](merot_candidate_diagnostic_plots.pdf), [`integrated_merot_locus_diagnostic_plots.pdf`](integrated_merot_locus_diagnostic_plots.pdf), [`lostruct_corner_plots.pdf`](lostruct_corner_plots.pdf), [`merged_302_regions_window_haplotype_heatmaps.pdf`](merged_302_regions_window_haplotype_heatmaps.pdf), [`302_loci_dotplots_contig_structure.pdf`](302_loci_dotplots_contig_structure.pdf), [`Relate_DetectSelection_significant_p1e-4.tsv`](Relate_DetectSelection_significant_p1e-4.tsv), and [`DoLoReS_significant_p1e-4.tsv`](DoLoReS_significant_p1e-4.tsv).
 
 <details>
 <summary>ssa15:107,518,364-109,094,614 - PCA_SV_ID_0197 - Parallel domestication-associated differentiation</summary>
@@ -33,6 +33,48 @@ Source files: [`interpretable_evolutionary_scenarios.tsv`](interpretable_evoluti
 <!-- Add comments here. -->
 
 </details>
+
+## Cross-method priority candidates: parallel, ancient/shared, and independent SV-like scenarios
+
+The following candidates are prioritized after comparing Local-PCA patterns, haplotype heatmaps, dotplots, Relate summaries, DoLoReS summaries, and the available structural metrics. The categories can overlap for a locus with an older shared structural background and later lineage-specific changes.
+
+### Parallel SV candidates
+
+1. **PCA_SV_ID_0136** — `ssa12:17,467,793–18,336,646`  
+   The strongest parallel candidate. The European and North American farmed/wild contrasts are concordant, and Relate includes shared farmed signals in both continents.
+
+2. **PCA_SV_ID_0197** — `ssa15:107,518,364–109,094,614`  
+   A clear candidate for parallel domestication-associated differentiation, with corresponding farmed-versus-wild placement in both continents.
+
+3. **PCA_SV_ID_0283** — `ssa27:10,112,401–16,192,809`  
+   Shows continent-associated structure together with internal haplotype differentiation; the parallel interpretation remains a secondary hypothesis.
+
+### Ancient/shared structural SV candidates
+
+1. **PCA_SV_ID_0245** — `ssa20:61,967,438–69,972,435`  
+   The clearest candidate for an older structural polymorphism or a long-maintained haplotype, with broad shared structure across assemblies and extended haplotype blocks.
+
+2. **PCA_SV_ID_0203** — `ssa16:33,928,303–73,490,590`  
+   A broad, complex structural background shared across salmon assemblies, with additional assembly-specific changes.
+
+3. **PCA_SV_ID_0191** — `ssa15:51,836,058–53,016,755`  
+   A candidate for an old long haplotype structure with multiple branches and assembly-level arrangement differences.
+
+### Independent or recurrent SV candidates
+
+1. **PCA_SV_ID_0203** — `ssa16:33,928,303–73,490,590`  
+   The strongest candidate. The dotplot shows multiple assembly-specific breaks, contig joins, and orientation changes. It contains 327 overlapping SVs and 32 direction-discordant comparisons.
+
+2. **PCA_SV_ID_0283** — `ssa27:10,112,401–16,192,809`  
+   European and North American assemblies show visibly different structural arrangements. It contains 49 overlapping SVs and 7 direction-discordant comparisons.
+
+3. **PCA_SV_ID_0276** — `ssa26:14,630,742–27,656,297`  
+   A shared broad structure is accompanied by assembly-specific segment breaks, joins, and orientation differences. It contains 125 overlapping SVs and 9 direction-discordant comparisons.
+
+4. **PCA_SV_ID_0191** — `ssa15:51,836,058–53,016,755`  
+   A secondary candidate with long multi-segment structure and assembly-level arrangement differences.
+
+These are candidates for breakpoint-level validation. Independent origin should be evaluated by comparing the PAF breakpoint coordinates and orientations among assemblies at each locus.
 
 <details>
 <summary>ssa04:1,244,149-6,552,701 - PCA_SV_ID_0049 - Parallel domestication-associated differentiation</summary>
